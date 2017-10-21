@@ -21,6 +21,8 @@ import akka.util.{ OptionVal, Unsafe }
 import scala.concurrent.duration._
 import scala.concurrent.{ Future, Promise }
 import scala.util.control.NonFatal
+import akka.util.ByteStringBuilder
+import java.nio.ByteOrder
 
 /**
  * INTERNAL API
@@ -45,6 +47,7 @@ private[remote] class Encoder(
   system:               ExtendedActorSystem,
   outboundEnvelopePool: ObjectPool[ReusableOutboundEnvelope],
   bufferPool:           EnvelopeBufferPool,
+  streamId:             Int,
   debugLogSend:         Boolean)
   extends GraphStageWithMaterializedValue[FlowShape[OutboundEnvelope, EnvelopeBuffer], Encoder.OutboundCompressionAccess] {
   import Encoder._
@@ -59,6 +62,7 @@ private[remote] class Encoder(
       private val headerBuilder = HeaderBuilder.out()
       headerBuilder setVersion ArteryTransport.Version
       headerBuilder setUid uniqueLocalAddress.uid
+      headerBuilder setStreamId streamId.toByte
       private val localAddress = uniqueLocalAddress.address
       private val serialization = SerializationExtension(system)
       private val serializationInfo = Serialization.Information(localAddress, system)
@@ -124,10 +128,18 @@ private[remote] class Encoder(
             MessageSerializer.serializeForArtery(serialization, outboundEnvelope, headerBuilder, envelope)
 
             if (instruments.nonEmpty) {
+              println(s"# has instruments") // FIXME
               val time = if (instruments.timeSerialization) System.nanoTime - startTime else 0
               instruments.messageSent(outboundEnvelope, envelope.byteBuffer.position(), time)
             }
           } finally Serialization.currentTransportInformation.value = oldValue
+
+          if (headerBuilder.version >= 1) {
+            // FIXME position when instruments?
+            // Framing.lengthField need the length after the length field, not the total frame size
+            val frameLength = envelope.byteBuffer.position() - EnvelopeBuffer.FrameLengthOffset - 4
+            envelope.byteBuffer.putInt(EnvelopeBuffer.FrameLengthOffset, frameLength)
+          }
 
           envelope.byteBuffer.flip()
 
@@ -148,6 +160,7 @@ private[remote] class Encoder(
                   Logging.messageClassName(outboundEnvelope.message))
                 throw e
               case _ if e.isInstanceOf[java.nio.BufferOverflowException] ⇒
+                e.printStackTrace() // FIXME
                 val reason = new OversizedPayloadException("Discarding oversized payload sent to " +
                   s"${outboundEnvelope.recipient}: max allowed size ${envelope.byteBuffer.limit()} " +
                   s"bytes. Message type [${Logging.messageClassName(outboundEnvelope.message)}].")
@@ -388,7 +401,7 @@ private[remote] class Decoder(
           }
         }
       }
-      override def onPush(): Unit = {
+      override def onPush(): Unit = try {
         messageCount += 1
         val envelope = grab(in)
         headerBuilder.resetMessageFields()
@@ -517,6 +530,10 @@ private[remote] class Decoder(
             push(out, decoded)
           }
         }
+      } catch {
+        case NonFatal(e) ⇒
+          log.warning("Dropping message due to: {}", e.getMessage)
+          pull(in)
       }
 
       private def resolveRecipient(path: String): OptionVal[InternalActorRef] = {

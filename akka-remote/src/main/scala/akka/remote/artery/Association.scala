@@ -603,7 +603,7 @@ private[remote] class Association(
 
       val (mergeHub, aeronSinkCompleted) = MergeHub.source[EnvelopeBuffer]
         .via(streamKillSwitch.flow)
-        .toMat(transport.aeronSink(this))(Keep.both).run()(materializer)
+        .toMat(transport.outboundTransportSink(this))(Keep.both).run()(materializer)
 
       val values: Vector[(SendQueue.QueueValue[OutboundEnvelope], Encoder.OutboundCompressionAccess, Future[Done])] =
         (0 until outboundLanes).map { _ ⇒

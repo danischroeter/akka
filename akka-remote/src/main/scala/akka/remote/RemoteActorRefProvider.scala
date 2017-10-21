@@ -18,11 +18,13 @@ import scala.concurrent.Future
 import akka.ConfigurationException
 import akka.dispatch.{ RequiresMessageQueue, UnboundedMessageQueueSemantics }
 import akka.remote.artery.ArteryTransport
+import akka.remote.artery.ArteryAeronTransport
 import akka.util.OptionVal
 import akka.remote.artery.OutboundEnvelope
 import akka.remote.artery.SystemMessageDelivery.SystemMessageEnvelope
 import akka.remote.serialization.ActorRefResolveCache
 import akka.remote.serialization.ActorRefResolveThreadLocalCache
+import akka.remote.artery.ArteryTcpTransport
 
 /**
  * INTERNAL API
@@ -201,7 +203,7 @@ private[akka] class RemoteActorRefProvider(
       d
     },
       serialization = SerializationExtension(system),
-      transport = if (remoteSettings.Artery.Enabled) new ArteryTransport(system, this) else new Remoting(system, this))
+      transport = if (remoteSettings.Artery.Enabled) new ArteryTcpTransport(system, this) else new Remoting(system, this)) // FIXME config
 
     _internals = internals
     remotingTerminator ! internals
