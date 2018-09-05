@@ -231,16 +231,16 @@ class ClusterSharding(system: ExtendedActorSystem) extends Extension {
     handOffStopMessage: Any): ActorRef = {
 
     if (settings.shouldHostShard(cluster)) {
-      regions.computeIfAbsent(typeName, new JFunc[String, ActorRef] {
-        def apply(typeName: String): ActorRef = {
-          implicit val timeout = system.settings.CreationTimeout
-          val startMsg = Start(typeName, entityProps, settings,
-            extractEntityId, extractShardId, allocationStrategy, handOffStopMessage)
-          val Started(shardRegion) = Await.result(guardian ? startMsg, timeout.duration)
-          shardRegion
-        }
-      })
-
+      val maybeRegion = regions.get(typeName)
+      if (maybeRegion != null) maybeRegion
+      else {
+        implicit val timeout = system.settings.CreationTimeout
+        val startMsg = Start(typeName, entityProps, settings,
+          extractEntityId, extractShardId, allocationStrategy, handOffStopMessage)
+        val Started(shardRegion) = Await.result(guardian ? startMsg, timeout.duration)
+        regions.put(typeName, shardRegion)
+        shardRegion
+      }
     } else {
       log.debug("Starting Shard Region Proxy [{}] (no actors will be hosted on this node)...", typeName)
       startProxy(
@@ -417,22 +417,25 @@ class ClusterSharding(system: ExtendedActorSystem) extends Extension {
     dataCenter:      Option[DataCenter],
     extractEntityId: ShardRegion.ExtractEntityId,
     extractShardId:  ShardRegion.ExtractShardId): ActorRef = {
+
     // it must be possible to start several proxies, one per data center
-    proxies.computeIfAbsent(proxyName(typeName, dataCenter), new JFunc[String, ActorRef] {
-      def apply(name: String): ActorRef = {
-        implicit val timeout = system.settings.CreationTimeout
-        val settings = ClusterShardingSettings(system).withRole(role)
-        val startMsg = StartProxy(typeName, dataCenter, settings, extractEntityId, extractShardId)
-        val Started(shardRegion) = Await.result(guardian ? startMsg, timeout.duration)
-        shardRegion
-      }
-    })
+    val proxyName = genProxyName(typeName, dataCenter)
+    val maybeProxy = proxies.get(proxyName)
+    if (null != maybeProxy) maybeProxy
+    else {
+      implicit val timeout = system.settings.CreationTimeout
+      val settings = ClusterShardingSettings(system).withRole(role)
+      val startMsg = StartProxy(typeName, dataCenter, settings, extractEntityId, extractShardId)
+      val Started(shardProxy) = Await.result(guardian ? startMsg, timeout.duration)
+      proxies.put(proxyName, shardProxy)
+      shardProxy
+    }
   }
 
-  private def proxyName(typeName: String, dataCenter: Option[DataCenter]): String = {
+  private def genProxyName(typeName: String, dataCenter: Option[DataCenter]): String = {
     dataCenter match {
       case None    ⇒ s"${typeName}Proxy"
-      case Some(t) ⇒ s"${typeName}Proxy" + "-" + t
+      case Some(t) ⇒ s"${typeName}Proxy-$t"
     }
   }
 
@@ -513,7 +516,7 @@ class ClusterSharding(system: ExtendedActorSystem) extends Extension {
   def shardRegion(typeName: String): ActorRef = {
     regions.get(typeName) match {
       case null ⇒
-        proxies.get(proxyName(typeName, None)) match {
+        proxies.get(genProxyName(typeName, None)) match {
           case null ⇒
             throw new IllegalArgumentException(
               s"Shard type [$typeName] must be started first")
@@ -531,7 +534,7 @@ class ClusterSharding(system: ExtendedActorSystem) extends Extension {
    * via the `ShardRegion`.
    */
   def shardRegionProxy(typeName: String, dataCenter: DataCenter): ActorRef = {
-    proxies.get(proxyName(typeName, Some(dataCenter))) match {
+    proxies.get(genProxyName(typeName, Some(dataCenter))) match {
       case null ⇒
         throw new IllegalArgumentException(
           s"Shard type [$typeName] must be started first")
